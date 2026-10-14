@@ -81,6 +81,8 @@ enum State {
         cur: Point,
         /// Shift: the anchors inside leave the selection if selected, else join it.
         toggle: bool,
+        /// Ruler guides the pointer stroke crossed, even if the final rectangle does not hold them.
+        hit: Vec<usize>,
     },
     Corner(CornerDrag),
     /// Dragging a bracket of type on a path.
@@ -385,7 +387,7 @@ impl Tool for DirectSelectionTool {
                     return out;
                 }
                 let Some(h) = hit_test(cx.doc, p, cx.hit_options()) else {
-                    self.state = State::Marquee { start: p, cur: p, toggle: ev.mods.shift };
+                    self.state = State::Marquee { start: p, cur: p, toggle: ev.mods.shift, hit: vec![] };
                     return vec![];
                 };
                 // Walk up from the leaf: select the first ancestor not yet selected (below the layer).
@@ -518,7 +520,7 @@ impl Tool for DirectSelectionTool {
                     }
                     return vec![];
                 }
-                self.state = State::Marquee { start: p, cur: p, toggle: ev.mods.shift };
+                self.state = State::Marquee { start: p, cur: p, toggle: ev.mods.shift, hit: vec![] };
                 vec![]
             }
             (PointerKind::Drag, State::MoveAnchors { start, grab, began }) => {
@@ -650,8 +652,13 @@ impl Tool for DirectSelectionTool {
                 self.state = State::Idle;
                 self.mesh.release().unwrap_or_default()
             }
-            (PointerKind::Drag, State::Marquee { start, toggle, .. }) => {
-                self.state = State::Marquee { start, cur: p, toggle };
+            (PointerKind::Drag, State::Marquee { start, cur, toggle, mut hit }) => {
+                for i in crate::rulerguide::guides_hit_by_stroke(cx, cur, p) {
+                    if !hit.contains(&i) {
+                        hit.push(i);
+                    }
+                }
+                self.state = State::Marquee { start, cur: p, toggle, hit };
                 vec![]
             }
             (PointerKind::Drag, State::Corner(mut c)) => {
@@ -697,7 +704,7 @@ impl Tool for DirectSelectionTool {
                 self.guides.clear();
                 vec![Action::Commit]
             }
-            (PointerKind::Up, State::Marquee { start, toggle, .. }) => {
+            (PointerKind::Up, State::Marquee { start, toggle, hit, .. }) => {
                 self.state = State::Idle;
                 let r = Rect::from_points(start, p);
                 if r.width() < cx.tol(3.0) && r.height() < cx.tol(3.0) {
@@ -724,7 +731,7 @@ impl Tool for DirectSelectionTool {
                 sel.retain(|(id, _)| cx.doc.is_editable(*id));
                 let items: Vec<Value> = sel.iter().map(|(id, v)| json!({"id": id.0, "anchors": anchors_json(v)})).collect();
                 let art = Action::Exec("select.anchorsMany".into(), json!({"items": items, "mode": if toggle { "toggle" } else { "set" }}));
-                std::iter::once(art).chain(crate::rulerguide::marquee_select(cx, r)).collect()
+                std::iter::once(art).chain(crate::rulerguide::marquee_select(cx, r, &hit)).collect()
             }
             _ => vec![],
         }
